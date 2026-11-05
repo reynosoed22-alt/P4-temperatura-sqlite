@@ -241,6 +241,9 @@ void MainWindow::construirInterfaz()
     construirPestanaTemperatura(pagTemp);
     pestanas->addTab(pagTemp, tr("Temperatura"));
     setCentralWidget(pestanas);
+    // P4: la pestaña Robot pide más alto que la pantalla del teléfono; sin esto, al
+    // recargar la tabla la ventana crece a ese mínimo y el registro queda fuera de pantalla
+    layout()->setSizeConstraint(QLayout::SetNoConstraint);
     setWindowTitle(tr("Robot P4 · Temperatura"));
 }
 
@@ -323,7 +326,8 @@ void MainWindow::construirPestanaTemperatura(QWidget *)
     m_registroTemp = new QPlainTextEdit;
     m_registroTemp->setReadOnly(true);
     m_registroTemp->setMaximumBlockCount(200);
-    m_registroTemp->setMinimumHeight(170);
+    m_registroTemp->setMinimumHeight(140);
+    m_registroTemp->setMaximumHeight(150);   // el resto del alto es para la tabla (10+ filas)
     m_capaTemp->addWidget(m_registroTemp);
 }
 
