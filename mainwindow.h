@@ -18,6 +18,8 @@ class QCheckBox;
 class QPlainTextEdit;
 class QLineSeries;
 class QValueAxis;
+class QVBoxLayout;
+class QTableWidget;
 
 // Una sola ventana: conexión, cruceta de movimiento, servo y gráfica de distancia.
 // La interfaz se arma en código (sin .ui) para que se adapte al tamaño del teléfono.
@@ -47,6 +49,9 @@ private slots:
     void alPresionarGrabar();
     void alPresionarRepetir();
     void siguientePasoRuta();
+    // Práctica 4: temperatura en SQLite
+    void cargarHistorial();
+    void alPresionarGuardarNota();
 
 private:
     void construirInterfaz();
@@ -58,6 +63,10 @@ private:
     void anotarPaso(const QString &accion, qint64 ms);
     void detenerRepeticion(const QString &motivo);
     void actualizarRuta();
+    // Práctica 4
+    void construirPestanaTemperatura(QWidget *pagina);
+    void abrirBase();
+    void guardarTemperatura(double celsius);
 
     QWebSocket m_socket;
     QTimer m_latido;          // {"tipo":"latido"} cada 1 s (la ESP32 responde latido_ok)
@@ -66,6 +75,7 @@ private:
     QTimer m_medirAuto;       // lectura periódica de distancia
     QTimer m_barrido;         // pasos del barrido con "scan"
     QTimer m_ruta;            // duración de cada paso al repetir la ruta
+    QTimer m_leerTempAuto;    // P4: pide {"tipo":"leer_dht"} cada 10 s
 
     QString m_accionActual;   // acción repetida por m_repetir
     int m_anguloPendiente = -1;
@@ -96,6 +106,17 @@ private:
     QLabel *m_infoRuta = nullptr;
     QLineSeries *m_serie = nullptr;
     QValueAxis *m_ejeX = nullptr;
+
+    // Práctica 4: pestaña Temperatura
+    QVBoxLayout *m_capaTemp = nullptr;
+    QLabel *m_temperatura = nullptr;     // última lectura en °C
+    QCheckBox *m_guardarAuto = nullptr;  // «Guardar cada 10 s»
+    QTableWidget *m_tabla = nullptr;     // historial (SELECT)
+    QLabel *m_total = nullptr;           // COUNT(*)
+    QSpinBox *m_id = nullptr;            // id de la fila a anotar (E5)
+    QLineEdit *m_nota = nullptr;
+    QLabel *m_resultadoNota = nullptr;   // filas que cambió el UPDATE
+    QPlainTextEdit *m_registroTemp = nullptr;  // copia del registro en esta pestaña
 };
 
 #endif // MAINWINDOW_H

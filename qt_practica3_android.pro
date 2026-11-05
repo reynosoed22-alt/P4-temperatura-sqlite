@@ -3,7 +3,7 @@
 # El mismo proyecto compila para escritorio (MinGW / GCC) y para Android (arm64-v8a):
 # solo cambia el kit seleccionado en Qt Creator.
 
-QT += core gui widgets websockets charts
+QT += core gui widgets websockets charts sql   # P4: sql para SQLite
 
 CONFIG += c++17
 

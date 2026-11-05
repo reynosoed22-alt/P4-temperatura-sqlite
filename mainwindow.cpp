@@ -21,6 +21,16 @@
 #include <QChartView>
 #include <QLineSeries>
 #include <QValueAxis>
+// Práctica 4
+#include <QTabWidget>
+#include <QTableWidget>
+#include <QHeaderView>
+#include <QSqlDatabase>
+#include <QSqlQuery>
+#include <QSqlError>
+#include <QStandardPaths>
+#include <QDir>
+#include <QFile>
 
 // Contrato con el firmware de la Práctica 2 (practica4.ino de 2026A, puerto 81):
 //   Qt -> ESP32  {"tipo":"latido"}
@@ -45,9 +55,13 @@ static const int MAX_PASOS = 40;        // pasos que caben en una ruta
 static const int MAX_PAUSA_MS = 3000;   // pausas más largas se recortan al repetir
 static const int MIN_PASO_MS = 100;     // toques más cortos se ignoran
 
-// Regla antiplagio de la Práctica 3: escribe aquí tu nombre y tu código.
-// Debe verse en todas tus capturas del teléfono.
-static const char *ALUMNO = "Edgar Ulises Reynoso Gonzalez · 223823098";
+// Regla antiplagio de la Práctica 4: nombre · código · temperatura_XXXX.db
+// (XXXX = últimos 4 dígitos del código). Debe verse en todas tus capturas.
+static const char *ALUMNO = "Edgar Ulises Reynoso Gonzalez · 223823098 · temperatura_3098.db";
+static const char *ARCHIVO_BASE = "temperatura_3098.db";
+// Debe coincidir con SIMULAR_DHT del firmware: "simulada" (true) o "dht22" (false)
+static const char *FUENTE = "simulada";
+static const int MS_GUARDAR_AUTO = 10000;   // DHT22 real: nunca más rápido que 2 s
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -77,6 +91,13 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_ruta.setSingleShot(true);
     connect(&m_ruta, &QTimer::timeout, this, &MainWindow::siguientePasoRuta);
+
+    // P4 · E3: lectura automática cada 10 s mientras «Guardar cada 10 s» esté marcado
+    m_leerTempAuto.setInterval(MS_GUARDAR_AUTO);
+    connect(&m_leerTempAuto, &QTimer::timeout, this, [this] { enviar({{"tipo", "leer_dht"}}); });
+
+    // P4 · E2: al final, para que un error de la base no impida conectar el robot
+    abrirBase();
 }
 
 // ---------------------------------------------------------------- interfaz
@@ -88,13 +109,14 @@ void MainWindow::construirInterfaz()
 
     auto *alumno = new QLabel(QString::fromUtf8(ALUMNO));
     alumno->setAlignment(Qt::AlignCenter);
+    alumno->setWordWrap(true);   // P4: el nombre y la base deben verse completos en el teléfono
     alumno->setStyleSheet("font-weight: bold; color: #1F4E79;");
     raiz->addWidget(alumno);
 
     // 1) Conexión
     auto *cajaConexion = new QGroupBox(tr("Conexión con el robot"));
     auto *filaConexion = new QHBoxLayout(cajaConexion);
-    m_ip = new QLineEdit(QStringLiteral("192.168.1.101"));
+    m_ip = new QLineEdit(QStringLiteral("192.168.100.4"));   // IP del robot en mi red
     m_ip->setPlaceholderText(tr("IP de la ESP32-S3"));
     m_ip->setInputMethodHints(Qt::ImhPreferNumbers);   // teclado numérico en Android
     m_puerto = new QSpinBox;
@@ -211,8 +233,98 @@ void MainWindow::construirInterfaz()
     m_registro->setMaximumHeight(110);
     raiz->addWidget(m_registro);
 
-    setCentralWidget(central);
-    setWindowTitle(tr("Robot P3 · Android"));
+    // P4: lo de la P3 queda sin cambios en la pestaña «Robot»; lo nuevo, en «Temperatura»
+    auto *pestanas = new QTabWidget(this);
+    pestanas->addTab(central, tr("Robot"));
+    auto *pagTemp = new QWidget;
+    m_capaTemp = new QVBoxLayout(pagTemp);
+    construirPestanaTemperatura(pagTemp);
+    pestanas->addTab(pagTemp, tr("Temperatura"));
+    setCentralWidget(pestanas);
+    setWindowTitle(tr("Robot P4 · Temperatura"));
+}
+
+// ---------------------------------------------------------------- P4: pestaña Temperatura
+void MainWindow::construirPestanaTemperatura(QWidget *)
+{
+    m_capaTemp->setSpacing(8);
+
+    // ALUMNO también aquí: debe verse en las capturas de esta pestaña
+    auto *alumno = new QLabel(QString::fromUtf8(ALUMNO));
+    alumno->setAlignment(Qt::AlignCenter);
+    alumno->setWordWrap(true);
+    alumno->setStyleSheet("font-weight: bold; color: #1F4E79;");
+    m_capaTemp->addWidget(alumno);
+
+    // E1: botón y última lectura
+    auto *filaLeer = new QHBoxLayout;
+    auto *leer = new QPushButton(tr("Leer temperatura"));
+    leer->setMinimumHeight(48);
+    m_temperatura = new QLabel(QStringLiteral("— °C"));
+    QFont grande = m_temperatura->font();
+    grande.setPointSizeF(QFontInfo(grande).pointSizeF() + 8);
+    grande.setBold(true);
+    m_temperatura->setFont(grande);
+    m_temperatura->setAlignment(Qt::AlignCenter);
+    filaLeer->addWidget(leer);
+    filaLeer->addWidget(m_temperatura, 1);
+    connect(leer, &QPushButton::clicked, this, [this] { enviar({{"tipo", "leer_dht"}}); });
+    m_capaTemp->addLayout(filaLeer);
+
+    // E3: guardado automático
+    m_guardarAuto = new QCheckBox(tr("Guardar cada 10 s"));
+    connect(m_guardarAuto, &QCheckBox::toggled, this, [this](bool activo) {
+        activo ? m_leerTempAuto.start() : m_leerTempAuto.stop();
+    });
+    m_capaTemp->addWidget(m_guardarAuto);
+
+    // E4: historial
+    auto *filaHist = new QHBoxLayout;
+    auto *cargar = new QPushButton(tr("Cargar historial"));
+    cargar->setMinimumHeight(48);
+    m_total = new QLabel(tr("Mediciones guardadas: ?"));
+    filaHist->addWidget(cargar);
+    filaHist->addWidget(m_total, 1);
+    connect(cargar, &QPushButton::clicked, this, &MainWindow::cargarHistorial);
+    m_capaTemp->addLayout(filaHist);
+
+    m_tabla = new QTableWidget(0, 4);
+    m_tabla->setHorizontalHeaderLabels({tr("id"), tr("fecha y hora"), tr("°C"), tr("nota")});
+    m_tabla->setEditTriggers(QAbstractItemView::NoEditTriggers);    // solo lectura (ep. 03)
+    m_tabla->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_tabla->verticalHeader()->hide();   // así no se confunde el número de fila con el id
+    m_tabla->horizontalHeader()->setStretchLastSection(true);
+    m_capaTemp->addWidget(m_tabla, 1);
+
+    // E5: nota con UPDATE ... WHERE id
+    auto *cajaNota = new QGroupBox(tr("Anotar una medición (toca una fila)"));
+    auto *filaNota = new QHBoxLayout(cajaNota);
+    m_id = new QSpinBox;
+    m_id->setRange(0, 99999);
+    m_id->setSpecialValueText(QStringLiteral("—"));   // 0 = ninguna fila elegida
+    m_id->setPrefix(tr("id "));
+    m_nota = new QLineEdit;
+    m_nota->setPlaceholderText(tr("Nota"));
+    auto *guardarNota = new QPushButton(tr("Guardar nota"));
+    filaNota->addWidget(m_id);
+    filaNota->addWidget(m_nota, 1);
+    filaNota->addWidget(guardarNota);
+    connect(guardarNota, &QPushButton::clicked, this, &MainWindow::alPresionarGuardarNota);
+    connect(m_tabla, &QTableWidget::cellClicked, this, [this](int fila, int) {
+        m_id->setValue(m_tabla->item(fila, 0)->text().toInt());   // columna 0 = id
+    });
+    m_capaTemp->addWidget(cajaNota);
+    m_resultadoNota = new QLabel;
+    m_resultadoNota->setAlignment(Qt::AlignCenter);
+    m_capaTemp->addWidget(m_resultadoNota);
+
+    // Registro también en esta pestaña: la ruta de la base, el esquema y los
+    // «Guardada … con id N» se ven junto con ALUMNO en la misma captura
+    m_registroTemp = new QPlainTextEdit;
+    m_registroTemp->setReadOnly(true);
+    m_registroTemp->setMaximumBlockCount(200);
+    m_registroTemp->setMinimumHeight(170);
+    m_capaTemp->addWidget(m_registroTemp);
 }
 
 QPushButton *MainWindow::botonMovimiento(QStyle::StandardPixmap icono, const QString &accion)
@@ -283,9 +395,11 @@ void MainWindow::alDesconectar()
     m_repetir.stop();
     m_medirAuto.stop();
     m_barrido.stop();
+    m_leerTempAuto.stop();             // P4 · E3
     if (m_pasoActual >= 0)
         detenerRepeticion(tr("se perdió la conexión"));
     m_auto->setChecked(false);
+    m_guardarAuto->setChecked(false);  // P4 · E3
     m_estado->setText(tr("Desconectado"));
     m_conectar->setText(tr("Conectar"));
     registrar(tr("desconectado"));
@@ -328,6 +442,19 @@ void MainWindow::alRecibirMensaje(const QString &texto)
         agregarDistancia(obj.value("d").toDouble());
         registrar(tr("scan %1° → %2 cm").arg(obj.value("angulo").toInt())
                       .arg(obj.value("d").toDouble(), 0, 'f', 1));
+    } else if (tipo == "dht_lectura") {
+        // P4 · E1: se decide con dht_ok, no con el número (si el sensor falla puede
+        // llegar null o la última lectura buena repetida)
+        registrar("RX " + texto);
+        const QJsonValue t = obj.value("temperatura");
+        if (!obj.value("dht_ok").toBool() || !t.isDouble()) {
+            registrar(tr("Lectura inválida: no se guarda"));
+            m_temperatura->setText(tr("inválida"));
+            return;
+        }
+        const double c1 = qRound(t.toDouble() * 10) / 10.0;   // el mismo valor que se guarda
+        m_temperatura->setText(QString::number(c1, 'f', 1) + " °C");
+        guardarTemperatura(c1);   // E3
     } else if (tipo == "saludo") {
         registrar(tr("saludo de %1").arg(obj.value("nombre_host").toString()));
     } else if (tipo == "mover_err") {
@@ -487,5 +614,109 @@ void MainWindow::actualizarRuta()
 
 void MainWindow::registrar(const QString &linea)
 {
-    m_registro->appendPlainText(QDateTime::currentDateTime().toString("hh:mm:ss  ") + linea);
+    const QString texto = QDateTime::currentDateTime().toString("hh:mm:ss  ") + linea;
+    m_registro->appendPlainText(texto);
+    if (m_registroTemp)
+        m_registroTemp->appendPlainText(texto);   // P4: misma línea en la pestaña Temperatura
+}
+
+// ---------------------------------------------------------------- P4: base SQLite
+// E2: abre (o crea) la base en la memoria privada de la app y crea la tabla
+void MainWindow::abrirBase()
+{
+    const QString carpeta = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir().mkpath(carpeta);
+    const QString ruta = carpeta + "/" + QString::fromUtf8(ARCHIVO_BASE);
+    const bool yaExistia = QFile::exists(ruta);
+
+    QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE");
+    db.setDatabaseName(ruta);
+    if (!db.open()) {
+        registrar("No se abrió la base: " + db.lastError().text());
+        return;
+    }
+    QSqlQuery consulta;
+    if (!consulta.exec("CREATE TABLE IF NOT EXISTS mediciones ("
+                       "id INTEGER PRIMARY KEY AUTOINCREMENT, "   // lo asigna SQLite
+                       "fecha_hora TEXT NOT NULL, "    // cuándo llegó la lectura (ISO 8601)
+                       "temperatura REAL NOT NULL, "   // °C con un decimal; nunca un 0 inventado
+                       "fuente TEXT NOT NULL, "        // dht22 o simulada
+                       "nota TEXT)")) {                // vacía; se llena con UPDATE en E5
+        registrar("No se creó la tabla: " + consulta.lastError().text());
+        return;
+    }
+    registrar((yaExistia ? "Base encontrada: " : "Base nueva creada: ") + ruta);
+
+    // E2d: esquema real de la tabla (5 columnas) en el registro
+    QSqlQuery esquema("PRAGMA table_info(mediciones)");
+    while (esquema.next())
+        registrar(QString("columna %1: %2 %3").arg(esquema.value(0).toInt())
+                      .arg(esquema.value(1).toString(), esquema.value(2).toString()));
+
+    cargarHistorial();
+}
+
+// E3: una fila nueva por cada lectura válida
+void MainWindow::guardarTemperatura(double celsius)
+{
+    const double c1 = qRound(celsius * 10) / 10.0;   // un decimal (24.60000038 -> 24.6)
+    QSqlQuery consulta;
+    consulta.prepare("INSERT INTO mediciones (fecha_hora, temperatura, fuente) "
+                     "VALUES (:fecha_hora, :temperatura, :fuente)");
+    consulta.bindValue(":fecha_hora", QDateTime::currentDateTime().toString(Qt::ISODate));
+    consulta.bindValue(":temperatura", c1);
+    consulta.bindValue(":fuente", QString::fromUtf8(FUENTE));
+    if (!consulta.exec()) {
+        registrar("INSERT falló: " + consulta.lastError().text());
+        return;
+    }
+    registrar(QString("Guardada %1 °C con id %2").arg(c1, 0, 'f', 1)
+                  .arg(consulta.lastInsertId().toString()));
+    cargarHistorial();   // E4: la tabla se recarga después de cada INSERT
+}
+
+// E4: las 50 más recientes arriba, y el total
+void MainWindow::cargarHistorial()
+{
+    QSqlQuery consulta("SELECT id, fecha_hora, temperatura, nota FROM mediciones "
+                       "ORDER BY id DESC LIMIT 50");
+    if (!consulta.isActive()) {
+        registrar("SELECT falló: " + consulta.lastError().text());
+        return;
+    }
+    m_tabla->setRowCount(0);
+    while (consulta.next()) {
+        const int fila = m_tabla->rowCount();
+        m_tabla->insertRow(fila);
+        m_tabla->setItem(fila, 0, new QTableWidgetItem(consulta.value(0).toString()));
+        m_tabla->setItem(fila, 1, new QTableWidgetItem(consulta.value(1).toString()));
+        m_tabla->setItem(fila, 2, new QTableWidgetItem(
+                              QString::number(consulta.value(2).toDouble(), 'f', 1)));
+        m_tabla->setItem(fila, 3, new QTableWidgetItem(consulta.value(3).toString()));
+    }
+    m_tabla->resizeColumnsToContents();
+    QSqlQuery total("SELECT COUNT(*) FROM mediciones");
+    if (total.next())
+        m_total->setText("Mediciones guardadas: " + total.value(0).toString());
+}
+
+// E5: escribe la nota en la fila con ese id (no crea filas nuevas)
+void MainWindow::alPresionarGuardarNota()
+{
+    if (m_id->value() == 0) {
+        m_resultadoNota->setText(tr("Primero toca una fila"));
+        return;
+    }
+    QSqlQuery consulta;
+    consulta.prepare("UPDATE mediciones SET nota = :nota WHERE id = :id");
+    consulta.bindValue(":nota", m_nota->text().trimmed());
+    consulta.bindValue(":id", m_id->value());
+    if (!consulta.exec()) {
+        m_resultadoNota->setText("UPDATE falló: " + consulta.lastError().text());
+        return;
+    }
+    const int filas = consulta.numRowsAffected();
+    m_resultadoNota->setText(QString("id %1 · Filas actualizadas: %2").arg(m_id->value()).arg(filas));
+    registrar(QString("UPDATE id %1 -> %2 fila(s)").arg(m_id->value()).arg(filas));
+    cargarHistorial();
 }
