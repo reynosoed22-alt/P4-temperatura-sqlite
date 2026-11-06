@@ -20,6 +20,9 @@ class QLineSeries;
 class QValueAxis;
 class QVBoxLayout;
 class QTableWidget;
+class QChart;
+class QBarSeries;
+class QBarCategoryAxis;
 
 // Una sola ventana: conexión, cruceta de movimiento, servo y gráfica de distancia.
 // La interfaz se arma en código (sin .ui) para que se adapte al tamaño del teléfono.
@@ -52,6 +55,7 @@ private slots:
     // Práctica 4: temperatura en SQLite
     void cargarHistorial();
     void alPresionarGuardarNota();
+    void actualizarHistograma();      // E7 (extra)
 
 private:
     void construirInterfaz();
@@ -67,6 +71,7 @@ private:
     void construirPestanaTemperatura(QWidget *pagina);
     void abrirBase();
     void guardarTemperatura(double celsius);
+    void construirPestanaHistograma(QWidget *pagina);   // E7 (extra)
 
     QWebSocket m_socket;
     QTimer m_latido;          // {"tipo":"latido"} cada 1 s (la ESP32 responde latido_ok)
@@ -117,6 +122,12 @@ private:
     QLineEdit *m_nota = nullptr;
     QLabel *m_resultadoNota = nullptr;   // filas que cambió el UPDATE
     QPlainTextEdit *m_registroTemp = nullptr;  // copia del registro en esta pestaña
+
+    // E7 (extra): histograma, cuántas lecturas cayeron en cada grado
+    QBarSeries *m_serieHist = nullptr;
+    QBarCategoryAxis *m_ejeGrados = nullptr;   // «22–23», «23–24»…
+    QValueAxis *m_ejeConteo = nullptr;         // número de lecturas
+    QLabel *m_resumenHist = nullptr;
 };
 
 #endif // MAINWINDOW_H

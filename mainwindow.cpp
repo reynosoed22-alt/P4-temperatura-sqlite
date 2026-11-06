@@ -21,6 +21,9 @@
 #include <QChartView>
 #include <QLineSeries>
 #include <QValueAxis>
+#include <QBarSeries>
+#include <QBarSet>
+#include <QBarCategoryAxis>
 // Práctica 4
 #include <QTabWidget>
 #include <QTableWidget>
@@ -240,6 +243,9 @@ void MainWindow::construirInterfaz()
     m_capaTemp = new QVBoxLayout(pagTemp);
     construirPestanaTemperatura(pagTemp);
     pestanas->addTab(pagTemp, tr("Temperatura"));
+    auto *pagHist = new QWidget;   // E7 (extra)
+    construirPestanaHistograma(pagHist);
+    pestanas->addTab(pagHist, tr("Histograma"));
     setCentralWidget(pestanas);
     // P4: la pestaña Robot pide más alto que la pantalla del teléfono; sin esto, al
     // recargar la tabla la ventana crece a ese mínimo y el registro queda fuera de pantalla
@@ -702,6 +708,7 @@ void MainWindow::cargarHistorial()
     QSqlQuery total("SELECT COUNT(*) FROM mediciones");
     if (total.next())
         m_total->setText("Mediciones guardadas: " + total.value(0).toString());
+    actualizarHistograma();   // E7: las barras crecen con cada INSERT
 }
 
 // E5: escribe la nota en la fila con ese id (no crea filas nuevas)
@@ -723,4 +730,92 @@ void MainWindow::alPresionarGuardarNota()
     m_resultadoNota->setText(QString("id %1 · Filas actualizadas: %2").arg(m_id->value()).arg(filas));
     registrar(QString("UPDATE id %1 -> %2 fila(s)").arg(m_id->value()).arg(filas));
     cargarHistorial();
+}
+
+// ---------------------------------------------------------------- E7 (extra): histograma
+// Una barra por grado: cuántas lecturas guardadas cayeron entre 22 y 23 °C, entre 23 y 24…
+void MainWindow::construirPestanaHistograma(QWidget *pagina)
+{
+    auto *capa = new QVBoxLayout(pagina);
+    auto *alumno = new QLabel(QString::fromUtf8(ALUMNO));
+    alumno->setAlignment(Qt::AlignCenter);
+    alumno->setWordWrap(true);
+    alumno->setStyleSheet("font-weight: bold; color: #1F4E79;");
+    capa->addWidget(alumno);
+
+    auto *actualizar = new QPushButton(tr("Actualizar histograma"));
+    actualizar->setMinimumHeight(48);
+    connect(actualizar, &QPushButton::clicked, this, [this] {
+        actualizarHistograma();
+        registrar("Histograma: " + m_resumenHist->text());
+    });
+    capa->addWidget(actualizar);
+    m_resumenHist = new QLabel;
+    m_resumenHist->setAlignment(Qt::AlignCenter);
+    m_resumenHist->setWordWrap(true);
+    capa->addWidget(m_resumenHist);
+
+    m_serieHist = new QBarSeries;
+    m_serieHist->setLabelsPosition(QAbstractBarSeries::LabelsOutsideEnd);
+    auto *grafica = new QChart;
+    grafica->setTitle(tr("Lecturas guardadas por grado"));
+    grafica->legend()->hide();
+    grafica->addSeries(m_serieHist);
+    m_ejeGrados = new QBarCategoryAxis;
+    m_ejeGrados->setTitleText(tr("°C (la barra 24 = de 24.0 a 24.9)"));
+    grafica->addAxis(m_ejeGrados, Qt::AlignBottom);
+    m_serieHist->attachAxis(m_ejeGrados);
+    m_ejeConteo = new QValueAxis;
+    m_ejeConteo->setLabelFormat("%d");
+    m_ejeConteo->setTickType(QValueAxis::TicksDynamic);   // marcas en números enteros
+    m_ejeConteo->setTickAnchor(0);
+    m_ejeConteo->setTitleText(tr("lecturas"));
+    grafica->addAxis(m_ejeConteo, Qt::AlignLeft);
+    m_serieHist->attachAxis(m_ejeConteo);
+    auto *vista = new QChartView(grafica);
+    vista->setRenderHint(QPainter::Antialiasing);
+    capa->addWidget(vista, 1);
+}
+
+void MainWindow::actualizarHistograma()
+{
+    // CAST(... AS INTEGER) quita los decimales: 24.6 -> 24, así que la barra «24»
+    // cuenta las lecturas desde 24.0 hasta 24.9 °C
+    QSqlQuery consulta("SELECT CAST(temperatura AS INTEGER) AS grado, COUNT(*) "
+                       "FROM mediciones GROUP BY grado ORDER BY grado");
+    if (!consulta.isActive()) {
+        m_resumenHist->setText("SELECT falló: " + consulta.lastError().text());
+        return;
+    }
+    auto *barras = new QBarSet(tr("lecturas"));
+    barras->setLabelColor(Qt::black);   // por defecto es blanco y no se ve fuera de la barra
+    QStringList grados;
+    int total = 0, maximo = 0;
+    QString masFrecuente;
+    while (consulta.next()) {
+        const int grado = consulta.value(0).toInt();
+        const int n = consulta.value(1).toInt();
+        grados << QString::number(grado);
+        *barras << n;
+        total += n;
+        if (n > maximo) {
+            maximo = n;
+            masFrecuente = grados.last();
+        }
+    }
+    m_serieHist->clear();          // borra las barras anteriores
+    m_ejeGrados->clear();
+    m_ejeGrados->append(grados);
+    m_serieHist->append(barras);
+    m_serieHist->setLabelsVisible(true);   // el número de lecturas encima de cada barra
+    int paso = 1;                  // 1, 2, 5, 10, 20… para no amontonar las marcas
+    while (maximo / paso > 8)
+        paso = (QString::number(paso).startsWith('2')) ? paso * 5 / 2 : paso * 2;
+    m_ejeConteo->setTickInterval(paso);
+    m_ejeConteo->setRange(0, (maximo / paso + 1) * paso);   // aire para el número de arriba
+    if (total == 0)
+        m_resumenHist->setText(tr("Sin lecturas guardadas"));
+    else
+        m_resumenHist->setText(tr("%1 lecturas · más frecuente: %2.x °C (%3)")
+                                   .arg(total).arg(masFrecuente).arg(maximo));
 }
